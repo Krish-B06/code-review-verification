@@ -1,0 +1,83 @@
+name: Custom Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+  copilot-requests: write
+
+jobs:
+  code-review:
+    name: Custom Code Review
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate PR diff
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git diff --no-ext-diff --unified=80 \
+            "$BASE_SHA" "$HEAD_SHA" > review.diff
+
+      - name: Prepare review prompt
+        run: |
+          cat > review-prompt.txt <<'EOF'
+          You are the repository's automated code review agent.
+
+          Follow the review instructions defined in:
+
+          .github/agents/code-review.agent.md
+
+          Review ONLY the developer changes contained in:
+
+          review.diff
+
+          Inspect relevant repository files when necessary to understand
+          or validate the changed code.
+
+          Consider available requirements, acceptance criteria,
+          architecture documentation, tests, coding standards,
+          security guidance, and static-analysis results.
+
+          Do not modify files.
+          Do not create commits.
+          Do not push code.
+          Do not implement fixes.
+          Do not rewrite developer code.
+
+          Return the complete review using the output format defined
+          by the custom review agent.
+          EOF
+
+      - name: Run custom review agent
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          npm install -g @github/copilot
+
+          copilot \
+            --agent=code-review \
+            --prompt "$(cat review-prompt.txt)" \
+            --silent \
+            --no-ask-user \
+            --deny-tool write \
+            > review.md
+
+          test -s review.md
+
+      - name: Post review comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr comment \
+            "${{ github.event.pull_request.number }}" \
+            --body-file review.md
